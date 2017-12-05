@@ -85,6 +85,7 @@ String GetLine()
 
 String getValueHelper(String data, char separator, int index)
 {
+    data.trim();
     int found = 0;
     int strIndex[] = { 0, -1 };
     int maxIndex = data.length() - 1;
@@ -107,43 +108,53 @@ class ValveState {
     int timeToRunMinute;
     long mililitersToRun;
     int minutesToRun;
+    void getSavedState (void);
+    void setValveMode (byte mode);
+    void setTimeToRun (int hour, int minute);
+    void setMililiters (long mililiters);
+    void setMinutesToRun (int minutes);
+    void saveCurrentState (void);
     ValveState();
-    void getSavedState () {
-      valveMode = readMemoryValueByte(MODE_MEMORY_ADDRESS);
-      timeToRunHour = readMemoryValue(TIME_OF_DAY_RUN_HOUR_MEMORY_ADDRESS);
-      timeToRunMinute = readMemoryValue(TIME_OF_DAY_RUN_MINUTE_MEMORY_ADDRESS);
-      mililitersToRun = readMemoryValueLong(MILLITERS_MEMORY_ADDRESS);
-      minutesToRun = readMemoryValue(RUN_TIME_MEMORY_ADDRESS_MINUTES);
-    }
-    void setValveMode (byte mode) {
-      valveMode = mode;
-      setMemoryValue(MODE_MEMORY_ADDRESS, valveMode);
-    }
-    void setTimeToRun (int hour, int minute) {
-      timeToRunHour = hour;
-      timeToRunMinute = minute;
-      setMemoryValue(TIME_OF_DAY_RUN_HOUR_MEMORY_ADDRESS, timeToRunHour);
-      setMemoryValue(TIME_OF_DAY_RUN_MINUTE_MEMORY_ADDRESS, timeToRunMinute);
-    }
-    void setMililiters (long mililiters) {
-      mililitersToRun = mililiters;
-      setMemoryValue(MILLITERS_MEMORY_ADDRESS, mililitersToRun);
-    }
-    void setMinutesToRun (int minutes) {
-      minutesToRun = minutes;
-      setMemoryValue(RUN_TIME_MEMORY_ADDRESS_MINUTES, minutesToRun);
-    }
-    void saveCurrentState () {
-      setMemoryValue(MODE_MEMORY_ADDRESS, valveMode);
-      setMemoryValue(TIME_OF_DAY_RUN_HOUR_MEMORY_ADDRESS, timeToRunHour);
-      setMemoryValue(TIME_OF_DAY_RUN_MINUTE_MEMORY_ADDRESS, timeToRunMinute);
-      setMemoryValue(MILLITERS_MEMORY_ADDRESS, mililitersToRun);
-      setMemoryValue(RUN_TIME_MEMORY_ADDRESS_MINUTES, minutesToRun);
-    }
 };
 
 ValveState::ValveState(void) {
-  getSavedState();
+  Serial.println("Valve State Constructor!");
+//  getSavedState();
+}
+void ValveState::getSavedState (void) {
+  Serial.println("Getting Saved State");
+  valveMode = readMemoryValueByte(MODE_MEMORY_ADDRESS);
+  timeToRunHour = readMemoryValue(TIME_OF_DAY_RUN_HOUR_MEMORY_ADDRESS);
+  timeToRunMinute = readMemoryValue(TIME_OF_DAY_RUN_MINUTE_MEMORY_ADDRESS);
+  mililitersToRun = readMemoryValueLong(MILLITERS_MEMORY_ADDRESS);
+  minutesToRun = readMemoryValue(RUN_TIME_MEMORY_ADDRESS_MINUTES);
+}
+void ValveState::setValveMode (byte mode) {
+  Serial.println("Valve Mode: " + String(mode));
+  valveMode = mode;
+  setMemoryValue(MODE_MEMORY_ADDRESS, valveMode);
+  Serial.println("Valve Mode: " + String(valveMode));
+}
+void ValveState::setTimeToRun (int hour, int minute) {
+  timeToRunHour = hour;
+  timeToRunMinute = minute;
+  setMemoryValue(TIME_OF_DAY_RUN_HOUR_MEMORY_ADDRESS, timeToRunHour);
+  setMemoryValue(TIME_OF_DAY_RUN_MINUTE_MEMORY_ADDRESS, timeToRunMinute);
+}
+void ValveState::setMililiters (long mililiters) {
+  mililitersToRun = mililiters;
+  setMemoryValue(MILLITERS_MEMORY_ADDRESS, mililitersToRun);
+}
+void ValveState::setMinutesToRun (int minutes) {
+  minutesToRun = minutes;
+  setMemoryValue(RUN_TIME_MEMORY_ADDRESS_MINUTES, minutesToRun);
+}
+void ValveState::saveCurrentState (void) {
+  setMemoryValue(MODE_MEMORY_ADDRESS, valveMode);
+  setMemoryValue(TIME_OF_DAY_RUN_HOUR_MEMORY_ADDRESS, timeToRunHour);
+  setMemoryValue(TIME_OF_DAY_RUN_MINUTE_MEMORY_ADDRESS, timeToRunMinute);
+  setMemoryValue(MILLITERS_MEMORY_ADDRESS, mililitersToRun);
+  setMemoryValue(RUN_TIME_MEMORY_ADDRESS_MINUTES, minutesToRun);
 }
 
 ValveState valve;
@@ -156,21 +167,30 @@ void setup()
   attachInterrupt(0,ContarPulsos,RISING); //(Interrupción 0(Pin2),función,Flanco de subida)
   pinMode(valveSensor, OUTPUT); // Establece el pin de la valvula como salida
   t0= millis();
-  Serial.println(MODE_MEMORY_ADDRESS);
-  Serial.println(TIME_OF_DAY_RUN_HOUR_MEMORY_ADDRESS);
-  Serial.println(TIME_OF_DAY_RUN_MINUTE_MEMORY_ADDRESS);
-  Serial.println(MILLITERS_MEMORY_ADDRESS);
-  Serial.println(RUN_TIME_MEMORY_ADDRESS_MINUTES);
+//  Serial.println(MODE_MEMORY_ADDRESS);
+//  Serial.println(TIME_OF_DAY_RUN_HOUR_MEMORY_ADDRESS);
+//  Serial.println(TIME_OF_DAY_RUN_MINUTE_MEMORY_ADDRESS);
+//  Serial.println(MILLITERS_MEMORY_ADDRESS);
+//  Serial.println(RUN_TIME_MEMORY_ADDRESS_MINUTES);
   valve = ValveState();
+  valve.getSavedState();
 }
 
 void loop() {
   if (Bluetooth.available()) {
-      String opcion = Bluetooth.readString();
-      Serial.println("Bluetooth Option: "+opcion);
-      stopValve();
-      parseSerialBluetooth(opcion);
+    Serial.println("Bluetooth Device Connected!");    
+    String opcion = Bluetooth.readString();
+    Serial.println("Bluetooth Option: "+opcion);
+    stopValve();
+    parseSerialBluetooth(opcion);
   }
+  Serial.println("MODE: " + String(valve.valveMode));
+//  Serial.println("TIME OF DAY TO RUN (HOUR): " + String(timeToRunHour));
+//  Serial.println("TIME OF DAY TO RUN (MIN): " + String(timeToRunMinute));
+//  Serial.println("MILILITERS: " + String(mililitersToRun));
+//  Serial.println("RUN TIME: " + String(minutesToRun));
+  
+  delay(1000);
 }
 
 void ContarPulsos () //Función que se ejecuta en interrupción  
@@ -243,13 +263,13 @@ bool setVolume(String volume) {
 }
 
 bool setSystemMode(String mode) {
-  if (mode == VOLUME) {
-     // TODO: set mode value to "VOLUME";
+  Serial.println("Setting System Mode: " + mode);
+//  mode.trim();
+  if (String(mode) == VOLUME) {
      Serial.println("Setting Mode to VOLUME");
      valve.setValveMode(MODE_VOLUME);
   }
-  else if (mode == TIME) {
-     // TODO: set mode value to "TIME";
+  else if (String(mode) == TIME) {
      Serial.println("Setting Mode to TIME");
      valve.setValveMode(MODE_TIME);
   }
