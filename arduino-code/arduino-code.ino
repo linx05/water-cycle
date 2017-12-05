@@ -20,6 +20,7 @@ const String SYNC = "SYNC";
 const String MODE = "MODE";
 const String VOLUME = "VOLUME";
 const String TIME = "TIME";
+const String RUN_TIME = "RUN_TIME";
 const String EXEC = "EXEC";
 
 //Value Constants
@@ -185,10 +186,10 @@ void loop() {
     parseSerialBluetooth(opcion);
   }
   Serial.println("MODE: " + String(valve.valveMode));
-//  Serial.println("TIME OF DAY TO RUN (HOUR): " + String(timeToRunHour));
-//  Serial.println("TIME OF DAY TO RUN (MIN): " + String(timeToRunMinute));
-//  Serial.println("MILILITERS: " + String(mililitersToRun));
-//  Serial.println("RUN TIME: " + String(minutesToRun));
+  Serial.println("TIME OF DAY TO RUN (HOUR): " + String(valve.timeToRunHour));
+  Serial.println("TIME OF DAY TO RUN (MIN): " + String(valve.timeToRunMinute));
+  Serial.println("MILILITERS: " + String(valve.mililitersToRun));
+  Serial.println("RUN TIME: " + String(valve.minutesToRun));
   
   delay(1000);
 }
@@ -223,6 +224,12 @@ bool parseSerialBluetooth(String command) {
         setVolume(volume);
       }
     }
+    else if (commandType == RUN_TIME) {
+      String runTime = getValueHelper(command,':', 2);
+      if (runTime) {
+        setRunTime(runTime);
+      }
+    }
     else if (commandType == TIME) {
       String fullTimeString = getValueHelper(command,':', 2);
       if (fullTimeString) {
@@ -238,6 +245,13 @@ bool parseSerialBluetooth(String command) {
     return true;
   }
   return false;
+}
+
+bool setRunTime(String minutesToRun) {
+  int minutes = minutesToRun.toInt();
+  if (minutes) {
+    valve.setMinutesToRun(minutes);
+  }
 }
 
 bool setTime(String fullTimeString) {
