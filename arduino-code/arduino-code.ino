@@ -5,6 +5,7 @@
 #include <EEPROMex.h>
 
 //PORTS
+byte sensorInterrupt = 0;  // 0 = digital pin 2
 const int flowSensor = 2;
 const int valveSensor = 3;
 const int bluetoothRX = 4;
@@ -35,15 +36,18 @@ const byte MODE_VOLUME = 1;
 const int MODE_MEMORY_ADDRESS = EEPROM.getAddress(sizeof(byte)); //Mode Options are 0 or 1 (By Liters or By Time)
 const int TIME_OF_DAY_RUN_HOUR_MEMORY_ADDRESS = MODE_MEMORY_ADDRESS + EEPROM.getAddress(sizeof(int)); // int (0 - 23)
 const int TIME_OF_DAY_RUN_MINUTE_MEMORY_ADDRESS = TIME_OF_DAY_RUN_HOUR_MEMORY_ADDRESS + EEPROM.getAddress(sizeof(int)); // int (0 - 60)
-const int LITERS_MEMORY_ADDRESS = TIME_OF_DAY_RUN_MINUTE_MEMORY_ADDRESS + EEPROM.getAddress(sizeof(long)); // long (milliters to store)
-const int RUN_TIME_MEMORY_ADDRESS_MINUTES = LITERS_MEMORY_ADDRESS + EEPROM.getAddress(sizeof(int)); // int (number of minutes)
-
-int closeValveInterval; //Interval Container - Used to Cancel Timeout Callback
+const int MILILITERS_MEMORY_ADDRESS = TIME_OF_DAY_RUN_MINUTE_MEMORY_ADDRESS + EEPROM.getAddress(sizeof(long)); // long (milliters to store)
+const int RUN_TIME_MEMORY_ADDRESS_MINUTES = MILILITERS_MEMORY_ADDRESS + EEPROM.getAddress(sizeof(int)); // int (number of minutes)
 
 //Variables utilizadas para la lectura del sensor de flujo.
-volatile int NumPulsos; //variable para la cantidad de pulsos recibidos. Como se usa dentro de una interrupcion debe ser volatile
-float factor_conversion=7.11; //para convertir de frecuencia a caudal
-long t0 = 0; //millis() del bucle anterior
+volatile int pulseCount; //variable para la cantidad de pulsos recibidos. Como se usa dentro de una interrupcion debe ser volatile
+// The hall-effect flow sensor outputs approximately 7.11 pulses per second per litre/minute of flow.
+float calibrationFactor = 7.11;
+float flowRate;
+unsigned int flowMilliLitres;
+unsigned long totalMilliLitres;
+
+unsigned long oldTime;
 
 //START MEMORY GETTERS AND SETTERS
 int setMemoryValue(int address, int value) {
@@ -73,33 +77,36 @@ long readMemoryValueLong (int address) {
 
 //START HELPER FUNCTIONS
 String GetLine()
- {   String S = "" ;
-     if (Serial.available())
-        {    char c = Serial.read(); ;
-              while ( c != '\n') //Hasta que el caracter sea intro
-                {     S = S + c ;
-                      delay(25) ;
-                      c = Serial.read();
-                }
-              return( S + '\n') ;
-        }
- }
+{   
+  String S = "" ;
+  if (Serial.available())
+  {    
+    char c = Serial.read(); ;
+    while ( c != '\n') //Hasta que el caracter sea intro
+    {     
+      S = S + c ;
+      delay(25) ;
+      c = Serial.read();
+    }
+    return( S + '\n');
+  }
+}
 
 String getValueHelper(String data, char separator, int index)
 {
-    data.trim();
-    int found = 0;
-    int strIndex[] = { 0, -1 };
-    int maxIndex = data.length() - 1;
-
-    for (int i = 0; i <= maxIndex && found <= index; i++) {
-        if (data.charAt(i) == separator || i == maxIndex) {
-            found++;
-            strIndex[0] = strIndex[1] + 1;
-            strIndex[1] = (i == maxIndex) ? i+1 : i;
-        }
+  data.trim();
+  int found = 0;
+  int strIndex[] = { 0, -1 };
+  int maxIndex = data.length() - 1;
+  
+  for (int i = 0; i <= maxIndex && found <= index; i++) {
+    if (data.charAt(i) == separator || i == maxIndex) {
+        found++;
+        strIndex[0] = strIndex[1] + 1;
+        strIndex[1] = (i == maxIndex) ? i+1 : i;
     }
-    return found > index ? data.substring(strIndex[0], strIndex[1]) : "";
+  }
+  return found > index ? data.substring(strIndex[0], strIndex[1]) : "";
 }
 //END HELPER FUNCTIONS
 
@@ -108,13 +115,14 @@ class ValveState {
     byte valveMode;
     int timeToRunHour;
     int timeToRunMinute;
-    int litersToRun;
+    int mililitersToRun;
     int minutesToRun;
     bool openValve;
+    unsigned long timeToStop;
     void getSavedState (void);
     void setValveMode (byte mode);
     void setTimeToRun (int hour, int minute);
-    void setLiters (int liters);
+    void setMililiters (int mililiters);
     void setMinutesToRun (int minutes);
     void saveCurrentState (void);
     ValveState();
@@ -129,7 +137,7 @@ void ValveState::getSavedState (void) {
   valveMode = readMemoryValueByte(MODE_MEMORY_ADDRESS);
   timeToRunHour = readMemoryValue(TIME_OF_DAY_RUN_HOUR_MEMORY_ADDRESS);
   timeToRunMinute = readMemoryValue(TIME_OF_DAY_RUN_MINUTE_MEMORY_ADDRESS);
-  litersToRun = readMemoryValueLong(LITERS_MEMORY_ADDRESS);
+  mililitersToRun = readMemoryValueLong(MILILITERS_MEMORY_ADDRESS);
   minutesToRun = readMemoryValue(RUN_TIME_MEMORY_ADDRESS_MINUTES);
 }
 void ValveState::setValveMode (byte mode) {
@@ -144,9 +152,9 @@ void ValveState::setTimeToRun (int hour, int minute) {
   setMemoryValue(TIME_OF_DAY_RUN_HOUR_MEMORY_ADDRESS, timeToRunHour);
   setMemoryValue(TIME_OF_DAY_RUN_MINUTE_MEMORY_ADDRESS, timeToRunMinute);
 }
-void ValveState::setLiters (int liters) {
-  litersToRun = liters;
-  setMemoryValue(LITERS_MEMORY_ADDRESS, litersToRun);
+void ValveState::setMililiters (int mililiters) {
+  mililitersToRun = mililiters;
+  setMemoryValue(MILILITERS_MEMORY_ADDRESS, mililitersToRun);
 }
 void ValveState::setMinutesToRun (int minutes) {
   minutesToRun = minutes;
@@ -156,28 +164,15 @@ void ValveState::saveCurrentState (void) {
   setMemoryValue(MODE_MEMORY_ADDRESS, valveMode);
   setMemoryValue(TIME_OF_DAY_RUN_HOUR_MEMORY_ADDRESS, timeToRunHour);
   setMemoryValue(TIME_OF_DAY_RUN_MINUTE_MEMORY_ADDRESS, timeToRunMinute);
-  setMemoryValue(LITERS_MEMORY_ADDRESS, litersToRun);
+  setMemoryValue(MILILITERS_MEMORY_ADDRESS, mililitersToRun);
   setMemoryValue(RUN_TIME_MEMORY_ADDRESS_MINUTES, minutesToRun);
 }
 
 ValveState valve;
 
-void countPulses () //Función que se ejecuta en interrupción  
+void pulseCounter () //Función que se ejecuta en interrupción  
 { 
-  NumPulsos++;  //incrementamos la variable de pulsos
-} 
-
-int ObtenerFrecuecia() //Función para obtener frecuencia de los pulsos
-{
-  Serial.println("Entrando a obtenerFrecuencia");
-  int frecuencia;
-  NumPulsos = 0; //Ponemos a 0 el número de pulsos
-  interrupts(); //Habilitamos las interrupciones
-  delay(1000); //muestra de 1 segundo
-  noInterrupts(); //Deshabilitamos las interrupciones
-  frecuencia=NumPulsos; //Hz(pulsos por segundo)
-  Serial.println("Saliendo de obtenerFrecuencia");
-  return frecuencia;
+  pulseCount++;  //incrementamos la variable de pulsos
 }
 
 uint32_t syncProvider()
@@ -188,26 +183,32 @@ uint32_t syncProvider()
 
 void setup()
 {
+  pulseCount        = 0;
+  flowRate          = 0.0;
+  flowMilliLitres   = 0;
+  totalMilliLitres  = 0;
+  oldTime           = 0;
   Serial.begin(9600); 
   Bluetooth.begin(9600); 
   while (!Serial) ; // wait until Arduino Serial Monitor opens
   pinMode(flowSensor, INPUT); 
-  attachInterrupt(0, countPulses, RISING); //(Interrupción 0(Pin2),función,Flanco de subida)
-  t0 = millis();
+  // The Hall-effect sensor is connected to pin 2 which uses interrupt 0.
+  // Configured to trigger on a FALLING state change (transition from HIGH
+  // state to LOW state)
+  attachInterrupt(sensorInterrupt, pulseCounter, RISING);
   pinMode(valveSensor, OUTPUT); // Establece el pin de la valvula como salida
-// Set RTC Time if necessary
-//  if (! rtc.begin()) {
-//    Serial.println("Couldn't find RTC");
-//    while (1);
-//  }
-//
-//  if (rtc.lostPower()) {
-//    Serial.println("RTC lost power, lets set the time!");
-//    // following line sets the RTC to the date & time this sketch was compiled
-//    rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
-//  }
+  // Set RTC Time if necessary
+  //  if (! rtc.begin()) {
+  //    Serial.println("Couldn't find RTC");
+  //    while (1);
+  //  }
+  //
+  //  if (rtc.lostPower()) {
+  //    Serial.println("RTC lost power, lets set the time!");
+  //    // following line sets the RTC to the date & time this sketch was compiled
+  //    rtc.adjust(DateTime(F(__DATE__), F(__TIME__)));
+  //  }
   clock.begin();
- 
   setSyncProvider(syncProvider);   // the function to get the time from the RTC
   if(timeStatus() != timeSet) 
     Serial.println("Unable to sync with the RTC");
@@ -217,58 +218,99 @@ void setup()
   valve.getSavedState();
 }
 
+void runValve() {
+  if((millis() - oldTime) > 1000)    // Only process counters once per second
+  { 
+    // Disable the interrupt while calculating flow rate and sending the value to
+    // the host
+    detachInterrupt(sensorInterrupt);
+        
+    // Because this loop may not complete in exactly 1 second intervals we calculate
+    // the number of milliseconds that have passed since the last execution and use
+    // that to scale the output. We also apply the calibrationFactor to scale the output
+    // based on the number of pulses per second per units of measure (litres/minute in
+    // this case) coming from the sensor.
+    flowRate = ((1000.0 / (millis() - oldTime)) * pulseCount) / calibrationFactor;
+    
+    // Note the time this processing pass was executed. Note that because we've
+    // disabled interrupts the millis() function won't actually be incrementing right
+    // at this point, but it will still return the value it was set to just before
+    // interrupts went away.
+    oldTime = millis();
+    
+    // Divide the flow rate in litres/minute by 60 to determine how many litres have
+    // passed through the sensor in this 1 second interval, then multiply by 1000 to
+    // convert to millilitres.
+    flowMilliLitres = (flowRate / 60) * 1000;
+    
+    // Add the millilitres passed in this second to the cumulative total
+    totalMilliLitres += flowMilliLitres;
+      
+    unsigned int frac;
+    
+    // Print the flow rate for this second in litres / minute
+    Serial.print("Flow rate: ");
+    Serial.print(int(flowRate));  // Print the integer part of the variable
+    Serial.print(".");             // Print the decimal point
+    // Determine the fractional part. The 10 multiplier gives us 1 decimal place.
+    frac = (flowRate - int(flowRate)) * 10;
+    Serial.print(frac, DEC) ;      // Print the fractional part of the variable
+    Serial.print("L/min");
+    // Print the number of litres flowed in this second
+    Serial.print("  Current Liquid Flowing: ");             // Output separator
+    Serial.print(flowMilliLitres);
+    Serial.print("mL/Sec");
+
+    // Print the cumulative total of litres flowed since starting
+    Serial.print("  Output Liquid Quantity: ");             // Output separator
+    Serial.print(totalMilliLitres);
+    Serial.println("mL"); 
+
+    // Reset the pulse counter so we can start incrementing again
+    pulseCount = 0;
+    
+    // Enable the interrupt again now that we've finished sending output
+    attachInterrupt(sensorInterrupt, pulseCounter, FALLING);
+  }
+}
+
 void loop() {
-  checkTime(hour(), minute());
-  if (Bluetooth.available()) {
-    Serial.println("Bluetooth Device Connected!");    
-    String opcion = Bluetooth.readString();
-    Serial.println("Bluetooth Option: "+opcion);
-    stopValve();
-    parseSerialBluetooth(opcion);
+  if (Bluetooth.available()) { 
+    Serial.println("Bluetooth Device Connected!");     
+    String opcion = Bluetooth.readString(); 
+    Serial.println("Bluetooth Option: "+opcion); 
+    stopValve(); 
+    parseSerialBluetooth(opcion); 
+  }
+  if (valve.openValve == true) {
+    Serial.println("Opening Valve Loop: " + String(valve.valveMode));
+    digitalWrite(valveSensor, HIGH);
+    if (valve.valveMode == MODE_TIME) {
+      if (millis() >= valve.timeToStop) {
+        stopValve();
+      }
+      else {
+        runValve();
+      }   
+    }
+    else if (valve.valveMode == MODE_VOLUME) {
+      int amountToRun = valve.mililitersToRun;
+      Serial.println("Original value: " + String(valve.mililitersToRun));
+      if (totalMilliLitres >= amountToRun) {
+        stopValve();
+      }
+      else {
+        runValve();
+      } 
+    }
   }
   Serial.println("");
   Serial.println("VALVE MODE: " + String(valve.valveMode));
   Serial.println("TIME OF DAY TO RUN (HOUR): " + String(valve.timeToRunHour));
   Serial.println("TIME OF DAY TO RUN (MIN): " + String(valve.timeToRunMinute));
-  Serial.println("LITERS: " + String(valve.litersToRun));
+  Serial.println("MILILITERS: " + String(valve.mililitersToRun));
   Serial.println("RUN TIME: " + String(valve.minutesToRun));
-  delay(500);
-  if (valve.openValve == true) {
-    Serial.println("Opening Valve Loop: " + String(valve.valveMode));
-    digitalWrite(valveSensor, HIGH);
-    if (valve.valveMode == MODE_TIME) {
-      unsigned long timeToRun = ((long)valve.minutesToRun) * 60;
-      timeToRun = timeToRun * 1000;
-      delay(timeToRun);      
-    }
-    else if (valve.valveMode == MODE_VOLUME) {
-      int cantidad = valve.litersToRun;
-      Serial.println("Original value: " + String(valve.litersToRun));
-      float volumen = 0;
-      long dt = 0; //variación de tiempo por cada bucle
-      Serial.println("Liters to run: " + String(cantidad));
-      while(volumen <= cantidad)
-      {
-        Serial.println(" Volumen: " + String(volumen) + " Cantidad: " + cantidad);
-        float frecuencia = ObtenerFrecuecia(); //obtenemos la frecuencia de los pulsos en Hz
-        Serial.println("Frequencia: " + String(frecuencia));
-        float caudal = frecuencia / factor_conversion; //calculamos el caudal en L/m
-        Serial.println("CaudalLM: " + String(caudal));
-        dt = millis()- t0; //calculamos la variación de tiempo
-        t0 = millis();
-        volumen = volumen + (caudal/60)*(dt/1000);
-        Serial.println("Volumen: " + String(volumen));
-        Serial.print ("Caudal: ");
-        Serial.print (caudal);
-        Serial.print (" L/mintVolumen: ");
-        Serial.print (volumen);
-        Serial.println (" L");
-      }
-    }
-    valve.openValve = false;
-    Serial.println("Closing Valve");
-    digitalWrite(valveSensor, LOW);
-  }
+  checkTime(hour(), minute());
 }
 
 void checkTime (int hour, int minute) {
@@ -341,14 +383,13 @@ bool setTime(String fullTimeString) {
 bool setVolume(String volume) {
   long vol = volume.toInt();
   if (vol) {
-    valve.setLiters(vol);
+    valve.setMililiters(vol);
     return true;
   }
 }
 
 bool setSystemMode(String mode) {
   Serial.println("Setting System Mode: " + mode);
-//  mode.trim();
   if (String(mode) == VOLUME) {
      Serial.println("Setting Mode to VOLUME");
      valve.setValveMode(MODE_VOLUME);
@@ -361,49 +402,33 @@ bool setSystemMode(String mode) {
 }
 
 void stopValve () {
-  Serial.println("Stopping Valve");
+  Serial.println("Closing Valve");
   valve.openValve = false;
-  return digitalWrite(valveSensor, LOW);
+  valve.timeToStop = millis();
+  digitalWrite(valveSensor, LOW);
+  pulseCount        = 0;
+  flowRate          = 0.0;
+  flowMilliLitres   = 0;
+  totalMilliLitres  = 0;
+  oldTime           = 0;
 }
 
 void openValve () {
   Serial.println("Opening Valve: " + String(valve.valveMode));
   valve.openValve = true;
-//  if (valve.valveMode == MODE_TIME) {
-//    openValveTime();
-//  }
-//  else if (valve.valveMode == MODE_VOLUME) {
-//    openValveVolume();
-//  }
+  if (valve.valveMode == MODE_TIME) {
+    openValveTime();
+  }
+  else if (valve.valveMode == MODE_VOLUME) {
+  }
   return;
 }
 
 void openValveTime () {
-  digitalWrite(valveSensor, HIGH);
   unsigned long timeToRun = ((long)valve.minutesToRun) * 60;
   timeToRun = timeToRun * 1000;
+  valve.timeToStop = millis() + timeToRun;
   Serial.println("Time to Run: "+ String(timeToRun));
-  // THIS IS CANCER but setTimeout doesn't seem to work :(
-  delay(timeToRun);
-  return stopValve();
-}
-
-void openValveVolume () {
-  digitalWrite(valveSensor, HIGH);
-  while(volumen<=cantidad)
-  {
-   float frecuencia=ObtenerFrecuecia(); //obtenemos la frecuencia de los pulsos en Hz
-   float caudal_L_m=frecuencia/factor_conversion; //calculamos el caudal en L/m
-   dt=millis()-t0; //calculamos la variación de tiempo
-   t0=millis();
-   volumen=volumen+(caudal_L_m/60)*(dt/1000);
-   Serial.print ("Caudal: ");
-   Serial.print (caudal_L_m,3);
-   Serial.print (" L/mintVolumen: ");
-   Serial.print (volumen,3);
-   Serial.println (" L");
-  }
-  return stopValve();
 }
 
 
